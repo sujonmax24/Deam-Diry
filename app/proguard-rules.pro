@@ -1,0 +1,1 @@
+# App-specific R8 rules. Room and Compose keep their generated/runtime metadata.
