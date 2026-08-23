@@ -1,4 +1,6 @@
-# 📔 Deam-Diry (আমার ডায়রি)
+# 📔 Dream Diry (আমার ডায়রি)
+
+> The app now creates a PIN during first launch. There is no hard-coded default PIN.
 
 **Write Your Dream Every Time, Every Place.**
 
@@ -34,10 +36,10 @@ Deam-Diry হলো একটি আধুনিক এবং সুন্দর
 
 ## 📥 ইনস্টলেশন ও ব্যবহার
 
-1. নিচের **Releases** সেকশন থেকে সর্বশেষ `app-debug.apk` ফাইলটি ডাউনলোড করুন।
-2. আপনার ফোনে **Install from Unknown Sources** অপশনটি চালু করুন।
-3. APK ফাইলটি ইনস্টল করে অ্যাপটি ওপেন করুন।
-4. ডিফল্ট PIN: `1234` (আপনি পরে এটি পরিবর্তন করতে পারবেন)।
+1. Install JDK 17 and Android SDK 35.
+2. Run `./gradlew :app:assembleDebug`.
+3. Install `app/build/outputs/apk/debug/app-debug.apk`.
+4. Create a PIN on first launch; it is stored as a salted digest and failed attempts are rate-limited.
 
 ---
 
