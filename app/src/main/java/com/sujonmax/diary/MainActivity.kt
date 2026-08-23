@@ -1,399 +1,166 @@
 package com.sujonmax.diary
 
 import android.app.Activity
-import android.app.Application
-import android.content.Context
 import android.content.Intent
-import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.pager.HorizontalPager
-import androidx.compose.foundation.pager.rememberPagerState
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.input.VisualTransformation
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.unit.Density
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
-import androidx.lifecycle.viewmodel.compose.viewModel
-import androidx.navigation.NavType
-import androidx.navigation.compose.NavHost
-import androidx.navigation.compose.composable
-import androidx.navigation.compose.rememberNavController
-import androidx.navigation.navArgument
-import androidx.room.*
-import coil.compose.AsyncImage
+import com.sujonmax.diary.data.*
+import com.sujonmax.diary.security.PinStore
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
-import java.text.SimpleDateFormat
-import java.util.*
+import java.text.DateFormat
+import java.util.Date
 
-// ==================== MainActivity ====================
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent {
-            DiaryNoteTheme {
-                Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    DiaryApp()
-                }
-            }
-        }
+        val app = application as DiaryApplication
+        val vm = ViewModelProvider(this, DiaryViewModel.factory(app.repository))[DiaryViewModel::class.java]
+        setContent { DreamDiryTheme { DiaryApp(vm, PinStore(this)) } }
     }
 }
 
-// ==================== Theme ====================
-@Composable
-fun DiaryNoteTheme(content: @Composable () -> Unit) {
-    MaterialTheme(
-        colorScheme = lightColorScheme(
-            primary = Color(0xFF8B5E3C), secondary = Color(0xFFD4A574), tertiary = Color(0xFF6B8E23),
-            background = Color(0xFFF5E6D3), surface = Color(0xFFFFF8F0),
-            onPrimary = Color.White, onSecondary = Color.White,
-            onBackground = Color(0xFF3E2723), onSurface = Color(0xFF3E2723)
-        ),
-        content = content
-    )
-}
-
-// ==================== Settings Manager ====================
-class SettingsManager(context: Context) {
-    private val prefs = context.getSharedPreferences("diary_settings", Context.MODE_PRIVATE)
-    fun getBrightness(): Float = prefs.getFloat("brightness", 1.0f)
-    fun saveBrightness(v: Float) { prefs.edit().putFloat("brightness", v).apply() }
-    fun getFontScale(): Float = prefs.getFloat("font_scale", 1.0f)
-    fun saveFontScale(v: Float) { prefs.edit().putFloat("font_scale", v).apply() }
-}
-
-// ==================== Database ====================
-@Entity(tableName = "notes")
-data class Note(
-    @PrimaryKey(autoGenerate = true) val id: Int = 0,
-    val title: String = "", val content: String = "", val photoUri: String? = null,
-    val folderId: Int? = null, val isDeleted: Boolean = false, val isHidden: Boolean = false,
-    val createdAt: Long = System.currentTimeMillis(), val updatedAt: Long = System.currentTimeMillis()
-)
-
-@Entity(tableName = "folders")
-data class Folder(@PrimaryKey(autoGenerate = true) val id: Int = 0, val name: String, val createdAt: Long = System.currentTimeMillis())
-
-@Dao
-interface NoteDao {
-    @Query("SELECT * FROM notes WHERE isDeleted = 0 AND isHidden = 0 ORDER BY updatedAt DESC")
-    fun getActiveNotes(): Flow<List<Note>>
-    @Query("SELECT * FROM notes WHERE isDeleted = 1 ORDER BY updatedAt DESC")
-    fun getDeletedNotes(): Flow<List<Note>>
-    @Query("SELECT * FROM notes WHERE isHidden = 1 AND isDeleted = 0 ORDER BY updatedAt DESC")
-    fun getHiddenNotes(): Flow<List<Note>>
-    @Query("SELECT * FROM notes WHERE id = :id")
-    suspend fun getNoteById(id: Int): Note?
-    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun insertNote(note: Note): Long
-    @Update suspend fun updateNote(note: Note)
-    @Query("UPDATE notes SET isDeleted = 1 WHERE id = :id") suspend fun softDeleteNote(id: Int)
-    @Query("UPDATE notes SET isDeleted = 0 WHERE id = :id") suspend fun restoreNote(id: Int)
-    @Query("DELETE FROM notes WHERE id = :id") suspend fun permanentDeleteNote(id: Int)
-    @Query("UPDATE notes SET isHidden = :hidden WHERE id = :id") suspend fun setHidden(id: Int, hidden: Boolean)
-}
-
-@Dao
-interface FolderDao {
-    @Query("SELECT * FROM folders ORDER BY createdAt DESC") fun getAllFolders(): Flow<List<Folder>>
-    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun insertFolder(folder: Folder): Long
-    @Query("DELETE FROM folders WHERE id = :id") suspend fun deleteFolder(id: Int)
-}
-
-@Database(entities = [Note::class, Folder::class], version = 1, exportSchema = false)
-abstract class NoteDatabase : RoomDatabase() {
-    abstract fun noteDao(): NoteDao
-    abstract fun folderDao(): FolderDao
+class DiaryViewModel(private val repository: NoteRepository) : ViewModel() {
+    private val query = MutableStateFlow("")
+    val search = query.asStateFlow()
+    val notes = query.flatMapLatest(repository::observeNotes)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    val trash = repository.trash.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    fun setQuery(value: String) { query.value = value }
+    fun save(note: NoteEntity, done: () -> Unit = {}) = viewModelScope.launch { repository.save(note); done() }
+    fun trash(id: Long) = viewModelScope.launch { repository.trash(id) }
+    fun restore(id: Long) = viewModelScope.launch { repository.restore(id) }
+    fun deleteForever(id: Long) = viewModelScope.launch { repository.deleteForever(id) }
     companion object {
-        @Volatile private var INSTANCE: NoteDatabase? = null
-        fun getDatabase(context: Context): NoteDatabase {
-            return INSTANCE ?: synchronized(this) {
-                val instance = Room.databaseBuilder(context.applicationContext, NoteDatabase::class.java, "diary_database").build()
-                INSTANCE = instance; instance
-            }
+        fun factory(repo: NoteRepository) = object : ViewModelProvider.Factory {
+            @Suppress("UNCHECKED_CAST")
+            override fun <T : ViewModel> create(modelClass: Class<T>): T = DiaryViewModel(repo) as T
         }
     }
 }
 
-class NoteRepository(private val noteDao: NoteDao, private val folderDao: FolderDao) {
-    val activeNotes = noteDao.getActiveNotes()
-    val deletedNotes = noteDao.getDeletedNotes()
-    val hiddenNotes = noteDao.getHiddenNotes()
-    val folders = folderDao.getAllFolders()
-    suspend fun getNoteById(id: Int) = noteDao.getNoteById(id)
-    suspend fun insertNote(note: Note) = noteDao.insertNote(note)
-    suspend fun updateNote(note: Note) = noteDao.updateNote(note)
-    suspend fun softDeleteNote(id: Int) = noteDao.softDeleteNote(id)
-    suspend fun restoreNote(id: Int) = noteDao.restoreNote(id)
-    suspend fun permanentDeleteNote(id: Int) = noteDao.permanentDeleteNote(id)
-    suspend fun setHidden(id: Int, hidden: Boolean) = noteDao.setHidden(id, hidden)
-    suspend fun insertFolder(folder: Folder) = folderDao.insertFolder(folder)
-    suspend fun deleteFolder(id: Int) = folderDao.deleteFolder(id)
-}
-
-// ==================== ViewModel ====================
-class NoteViewModel(application: Application) : AndroidViewModel(application) {
-    private val db = NoteDatabase.getDatabase(application)
-    private val repository = NoteRepository(db.noteDao(), db.folderDao())
-    val activeNotes = repository.activeNotes.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-    val deletedNotes = repository.deletedNotes.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-    val hiddenNotes = repository.hiddenNotes.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-    val folders = repository.folders.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-    private val _currentNote = MutableStateFlow<Note?>(null)
-    val currentNote: StateFlow<Note?> = _currentNote
-
-    fun loadNote(id: Int) { viewModelScope.launch { _currentNote.value = repository.getNoteById(id) } }
-    fun saveNote(note: Note, onSaved: () -> Unit = {}) {
-        viewModelScope.launch {
-            if (note.id == 0) repository.insertNote(note) else repository.updateNote(note.copy(updatedAt = System.currentTimeMillis()))
-            onSaved()
-        }
-    }
-    fun deleteNote(id: Int) { viewModelScope.launch { repository.softDeleteNote(id) } }
-    fun restoreNote(id: Int) { viewModelScope.launch { repository.restoreNote(id) } }
-    fun permanentDelete(id: Int) { viewModelScope.launch { repository.permanentDeleteNote(id) } }
-    fun hideNote(id: Int, hidden: Boolean) { viewModelScope.launch { repository.setHidden(id, hidden) } }
-    fun createFolder(name: String) { viewModelScope.launch { repository.insertFolder(Folder(name = name)) } }
-    fun deleteFolder(id: Int) { viewModelScope.launch { repository.deleteFolder(id) } }
-}
-
-// ==================== Navigation & App ====================
 @Composable
-fun DiaryApp(viewModel: NoteViewModel = viewModel()) {
-    val context = LocalContext.current
-    val settings = remember { SettingsManager(context) }
-    var brightness by remember { mutableStateOf(settings.getBrightness()) }
-    var fontScale by remember { mutableStateOf(settings.getFontScale()) }
-    val navController = rememberNavController()
-    var isLocked by remember { mutableStateOf(true) }
-
-    LaunchedEffect(brightness) {
-        (context as? Activity)?.window?.let { window ->
-            val attrs = window.attributes; attrs.screenBrightness = brightness; window.attributes = attrs
-        }
+private fun DiaryApp(vm: DiaryViewModel, pinStore: PinStore) {
+    var unlocked by remember { mutableStateOf(!pinStore.configured) }
+    var trashOpen by remember { mutableStateOf(false) }
+    var editorNote by remember { mutableStateOf<NoteEntity?>(null) }
+    if (!unlocked) {
+        PinScreen(pinStore) { unlocked = true }
+        return
     }
+    when {
+        trashOpen -> TrashScreen(vm, onBack = { trashOpen = false })
+        editorNote != null -> EditorScreen(editorNote!!, vm) { editorNote = null }
+        else -> HomeScreen(vm, onTrash = { trashOpen = true }, onEdit = { editorNote = it },
+            onNew = { editorNote = NoteEntity() })
+    }
+}
 
-    val baseDensity = LocalDensity.current
-    CompositionLocalProvider(LocalDensity provides Density(baseDensity.density, fontScale)) {
-        if (isLocked) { LockScreen(onUnlocked = { isLocked = false }) } 
-        else {
-            NavHost(navController = navController, startDestination = "home") {
-                composable("home") { HomeScreen(viewModel, { navController.navigate("edit/$it") }, { navController.navigate("edit/0") }, { navController.navigate("recycle") }, { navController.navigate("folders") }, { navController.navigate("hidden") }, { navController.navigate("settings") }, { navController.navigate("about") }) }
-                composable("edit/{noteId}", arguments = listOf(navArgument("noteId") { type = NavType.IntType })) { back ->
-                    val noteId = back.arguments?.getInt("noteId") ?: 0
-                    NoteEditorScreen(viewModel, if (noteId == 0) null else noteId, { navController.popBackStack() })
+@Composable
+private fun PinScreen(store: PinStore, onUnlocked: () -> Unit) {
+    var pin by remember { mutableStateOf("") }
+    var confirmation by remember { mutableStateOf("") }
+    var setup by remember { mutableStateOf(!store.configured) }
+    var error by remember { mutableStateOf<String?>(null) }
+    Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.Center) {
+        Text(if (setup) "Create your PIN" else "Dream Diry is locked", style = MaterialTheme.typography.headlineSmall)
+        Spacer(Modifier.height(16.dp))
+        OutlinedTextField(pin, { if (it.length <= 8 && it.all(Char::isDigit)) pin = it },
+            label = { Text(if (setup) "New PIN" else "PIN") },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+            singleLine = true, modifier = Modifier.fillMaxWidth())
+        if (setup) OutlinedTextField(confirmation, { confirmation = it }, label = { Text("Confirm PIN") },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+            singleLine = true, modifier = Modifier.fillMaxWidth())
+        error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        Button({
+            if (setup && pin == confirmation && pin.length >= 4) { store.setPin(pin); onUnlocked() }
+            else if (!setup && store.verify(pin)) onUnlocked()
+            else error = if (setup) "PINs must match and contain 4–8 digits" else "Incorrect PIN or temporary lockout"
+        }, Modifier.fillMaxWidth().padding(top = 16.dp)) { Text(if (setup) "Save PIN" else "Unlock") }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun HomeScreen(vm: DiaryViewModel, onTrash: () -> Unit, onEdit: (NoteEntity) -> Unit, onNew: () -> Unit) {
+    val notes by vm.notes.collectAsStateWithLifecycle()
+    val search by vm.search.collectAsStateWithLifecycle()
+    Scaffold(topBar = { TopAppBar({ Text("Dream Diry") }, actions = {
+        IconButton(onClick = onTrash) { Icon(Icons.Default.Delete, "Recycle bin") }
+    }) }, floatingActionButton = { FloatingActionButton(onNew) { Icon(Icons.Default.Add, "New note") } }) { pad ->
+        Column(Modifier.padding(pad).padding(horizontal = 16.dp)) {
+            OutlinedTextField(search, vm::setQuery, label = { Text("Search notes") },
+                leadingIcon = { Icon(Icons.Default.Search, null) }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(vertical = 16.dp)) {
+                items(notes, key = { it.id }) { note ->
+                    Card(onClick = { onEdit(note) }, Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(16.dp)) {
+                            Text(note.title.ifBlank { "Untitled" }, style = MaterialTheme.typography.titleMedium)
+                            Text(note.content.take(180), maxLines = 3)
+                            Text(DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(note.updatedAt)),
+                                style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
                 }
-                composable("recycle") { RecycleBinScreen(viewModel, { navController.popBackStack() }) }
-                composable("folders") { FolderScreen(viewModel, { navController.popBackStack() }) }
-                composable("hidden") { HiddenScreen(viewModel, { navController.popBackStack() }, { navController.navigate("edit/$it") }) }
-                composable("settings") { SettingsScreen(brightness, fontScale, { brightness = it; settings.saveBrightness(it) }, { fontScale = it; settings.saveFontScale(it) }, { navController.popBackStack() }) }
-                composable("about") { AboutScreen { navController.popBackStack() } }
             }
         }
     }
 }
 
-// ==================== Lock Screen ====================
-@Composable
-fun LockScreen(onUnlocked: () -> Unit) {
-    var pin by remember { mutableStateOf("") }; var visible by remember { mutableStateOf(false) }; var error by remember { mutableStateOf(false) }
-    val correctPin = "1234"
-    Column(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-        Icon(Icons.Default.Lock, null, modifier = Modifier.size(80.dp), tint = MaterialTheme.colorScheme.primary)
-        Spacer(Modifier.height(24.dp))
-        Text("ডায়রি লক করা আছে 🔒", fontSize = 24.sp, color = MaterialTheme.colorScheme.primary)
-        Spacer(Modifier.height(32.dp))
-        OutlinedTextField(value = pin, onValueChange = { if (it.length <= 4) { pin = it; error = false } }, placeholder = { Text("PIN দিন (• • • •)") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), visualTransformation = if (visible) VisualTransformation.None else PasswordVisualTransformation(), trailingIcon = { IconButton(onClick = { visible = !visible }) { Icon(if (visible) Icons.Default.VisibilityOff else Icons.Default.Visibility, null) } }, isError = error, supportingText = { if (error) Text("ভুল PIN!", color = Color.Red) }, singleLine = true, modifier = Modifier.fillMaxWidth())
-        Spacer(Modifier.height(24.dp))
-        Button(onClick = { if (pin == correctPin) onUnlocked() else error = true }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)) { Text("আনলক করুন", modifier = Modifier.padding(8.dp)) }
-    }
-}
-
-// ==================== Home Screen ====================
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
-@Composable
-fun HomeScreen(viewModel: NoteViewModel, onNoteClick: (Int) -> Unit, onAddNote: () -> Unit, onRecycleBin: () -> Unit, onFolders: () -> Unit, onHidden: () -> Unit, onSettings: () -> Unit, onAbout: () -> Unit) {
-    val notes by viewModel.activeNotes.collectAsState()
-    val pagerState = rememberPagerState(pageCount = { notes.size + 1 })
-    var showMenu by remember { mutableStateOf(false) }
-    Scaffold(topBar = {
-        TopAppBar(title = { Text("📔 আমার ডায়রি", fontFamily = FontFamily.Serif) }, colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.primary, titleContentColor = Color.White, actionIconContentColor = Color.White), actions = {
-            IconButton(onClick = { showMenu = true }) { Icon(Icons.Default.MoreVert, "মেনু") }
-            DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
-                DropdownMenuItem(text = { Text("️ Settings") }, onClick = { showMenu = false; onSettings() })
-                DropdownMenuItem(text = { Text("📁 ফোল্ডার তৈরি") }, onClick = { showMenu = false; onFolders() })
-                DropdownMenuItem(text = { Text("🗑️ রিসাইকেল বিন") }, onClick = { showMenu = false; onRecycleBin() })
-                DropdownMenuItem(text = { Text("🙈 লুকানো নোট") }, onClick = { showMenu = false; onHidden() })
-                DropdownMenuItem(text = { Text("ℹ️ About") }, onClick = { showMenu = false; onAbout() })
-            }
-        })
-    }, floatingActionButton = { ExtendedFloatingActionButton(onClick = onAddNote, icon = { Icon(Icons.Default.Add, null) }, text = { Text("নতুন পাতা") }, containerColor = MaterialTheme.colorScheme.primary) }) { padding ->
-        Column(modifier = Modifier.fillMaxSize().padding(padding)) {
-            HorizontalPager(state = pagerState, modifier = Modifier.weight(1f)) { page ->
-                if (page < notes.size) { DiaryPageCard(notes[page]) { onNoteClick(notes[page].id) } } 
-                else { Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Column(horizontalAlignment = Alignment.CenterHorizontally) { Text("➕", fontSize = 60.sp); Spacer(Modifier.height(16.dp)); Text("নতুন পাতা যোগ করতে\nনিচের বাটনে চাপ দিন", textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f)) } } }
-            }
-            Row(modifier = Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.Center) {
-                repeat(minOf(notes.size + 1, 20)) { index -> Box(modifier = Modifier.padding(4.dp).size(if (pagerState.currentPage == index) 10.dp else 6.dp).clip(CircleShape).background(if (pagerState.currentPage == index) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.primary.copy(alpha = 0.3f))) }
-            }
-        }
-    }
-}
-
-@Composable
-fun DiaryPageCard(note: Note, onClick: () -> Unit) {
-    Card(onClick = onClick, modifier = Modifier.fillMaxSize().padding(24.dp), shape = RoundedCornerShape(4.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), elevation = CardDefaults.cardElevation(8.dp)) {
-        Column(modifier = Modifier.fillMaxSize().padding(24.dp)) {
-            Text(note.title.ifEmpty { "শিরোনামহীন" }, style = MaterialTheme.typography.headlineSmall, fontFamily = FontFamily.Serif, color = MaterialTheme.colorScheme.primary)
-            Spacer(Modifier.height(8.dp))
-            Text(SimpleDateFormat("dd MMM yyyy, hh:mm a", Locale.getDefault()).format(Date(note.updatedAt)), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
-            Divider(modifier = Modifier.padding(vertical = 16.dp), color = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f))
-            Text(note.content.take(500), style = MaterialTheme.typography.bodyLarge, fontFamily = FontFamily.Serif, modifier = Modifier.weight(1f))
-            if (note.photoUri != null) { AsyncImage(model = note.photoUri, contentDescription = null, modifier = Modifier.fillMaxWidth().height(150.dp).clip(RoundedCornerShape(8.dp)), contentScale = ContentScale.Crop) }
-        }
-    }
-}
-
-// ==================== Note Editor ====================
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun NoteEditorScreen(viewModel: NoteViewModel, noteId: Int?, onBack: () -> Unit) {
-    val note by viewModel.currentNote.collectAsState()
-    var title by remember { mutableStateOf("") }; var content by remember { mutableStateOf("") }; var photoUri by remember { mutableStateOf<String?>(null) }; var showDeleteDialog by remember { mutableStateOf(false) }
-    LaunchedEffect(noteId) { if (noteId != null) viewModel.loadNote(noteId) }
-    LaunchedEffect(note) { note?.let { title = it.title; content = it.content; photoUri = it.photoUri } }
-    val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? -> uri?.let { photoUri = it.toString() } }
-    Scaffold(topBar = {
-        TopAppBar(title = { Text(if (noteId == null) "নতুন নোট" else "নোট সম্পাদনা") }, navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, null) } }, actions = {
-            IconButton(onClick = { imagePicker.launch("image/*") }) { Icon(Icons.Default.PhotoCamera, "ছবি") }
-            if (noteId != null) {
-                IconButton(onClick = { viewModel.hideNote(noteId, true); onBack() }) { Icon(Icons.Default.VisibilityOff, "লুকান") }
-                IconButton(onClick = { showDeleteDialog = true }) { Icon(Icons.Default.Delete, "ডিলেট", tint = Color.Red) }
-            }
-            IconButton(onClick = { viewModel.saveNote(Note(id = noteId ?: 0, title = title, content = content, photoUri = photoUri)) { onBack() } }) { Icon(Icons.Default.Save, "সেভ") }
-        })
-    }) { padding ->
-        Column(modifier = Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(16.dp)) {
-            OutlinedTextField(value = title, onValueChange = { title = it }, placeholder = { Text("শিরোনাম লিখুন...", fontFamily = FontFamily.Serif) }, modifier = Modifier.fillMaxWidth(), textStyle = MaterialTheme.typography.headlineSmall.copy(fontFamily = FontFamily.Serif))
-            Spacer(Modifier.height(16.dp))
-            if (photoUri != null) { Card(modifier = Modifier.fillMaxWidth().height(200.dp), shape = RoundedCornerShape(12.dp)) { Box { AsyncImage(photoUri, null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop); IconButton(onClick = { photoUri = null }, modifier = Modifier.align(Alignment.TopEnd)) { Icon(Icons.Default.Close, null, tint = Color.White) } } }; Spacer(Modifier.height(16.dp)) }
-            OutlinedTextField(value = content, onValueChange = { content = it }, placeholder = { Text("আপনার কথা লিখুন...", fontFamily = FontFamily.Serif) }, modifier = Modifier.fillMaxWidth().heightIn(min = 400.dp), textStyle = MaterialTheme.typography.bodyLarge.copy(fontFamily = FontFamily.Serif, fontSize = 18.sp))
+private fun EditorScreen(initial: NoteEntity, vm: DiaryViewModel, onBack: () -> Unit) {
+    var title by remember(initial.id) { mutableStateOf(initial.title) }
+    var content by remember(initial.id) { mutableStateOf(initial.content) }
+    var tags by remember(initial.id) { mutableStateOf(initial.tags) }
+    Scaffold(topBar = { TopAppBar({ Text(if (initial.id == 0L) "New note" else "Edit note") },
+        navigationIcon = { IconButton(onBack) { Icon(Icons.Default.ArrowBack, "Back") } },
+        actions = { IconButton({ vm.save(initial.copy(title = title, content = content, tags = tags)); onBack() }) {
+            Icon(Icons.Default.Save, "Save")
+        } }) }) { pad ->
+        Column(Modifier.padding(pad).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            OutlinedTextField(title, { title = it }, label = { Text("Title") }, singleLine = true, Modifier.fillMaxWidth())
+            OutlinedTextField(content, { content = it }, label = { Text("Write your diary…") },
+                Modifier.fillMaxWidth().weight(1f), minLines = 12)
+            OutlinedTextField(tags, { tags = it }, label = { Text("Tags (comma separated)") }, singleLine = true, Modifier.fillMaxWidth())
+            if (initial.id != 0L) TextButton({ vm.trash(initial.id); onBack() }) { Text("Move to recycle bin") }
         }
     }
-    if (showDeleteDialog && noteId != null) { AlertDialog(onDismissRequest = { showDeleteDialog = false }, title = { Text("নোট ডিলেট করবেন?") }, text = { Text("নোটটি রিসাইকেল বিনে যাবে।") }, confirmButton = { TextButton(onClick = { viewModel.deleteNote(noteId); showDeleteDialog = false; onBack() }) { Text("ডিলেট", color = Color.Red) } }, dismissButton = { TextButton(onClick = { showDeleteDialog = false }) { Text("বাতিল") } }) }
 }
 
-// ==================== Settings Screen ====================
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(brightness: Float, fontScale: Float, onBrightnessChange: (Float) -> Unit, onFontScaleChange: (Float) -> Unit, onBack: () -> Unit) {
-    Scaffold(topBar = { TopAppBar(title = { Text("⚙️ Settings") }, navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, null) } }) }) { padding ->
-        Column(modifier = Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(24.dp), verticalArrangement = Arrangement.spacedBy(24.dp)) {
-            Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) { Column(modifier = Modifier.padding(20.dp)) {
-                Text("️ Screen Brightness", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold); Spacer(Modifier.height(8.dp))
-                Text("বর্তমান: ${(brightness * 100).toInt()}%", style = MaterialTheme.typography.bodyMedium); Spacer(Modifier.height(8.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = { onBrightnessChange(maxOf(0.1f, brightness - 0.1f)) }) { Icon(Icons.Default.Remove, "কমান", tint = MaterialTheme.colorScheme.primary) }
-                    Slider(value = brightness, onValueChange = { onBrightnessChange(it) }, valueRange = 0.1f..1f, modifier = Modifier.weight(1f))
-                    IconButton(onClick = { onBrightnessChange(minOf(1f, brightness + 0.1f)) }) { Icon(Icons.Default.Add, "বাড়ান", tint = MaterialTheme.colorScheme.primary) }
+private fun TrashScreen(vm: DiaryViewModel, onBack: () -> Unit) {
+    val notes by vm.trash.collectAsStateWithLifecycle()
+    Scaffold(topBar = { TopAppBar({ Text("Recycle bin") }, navigationIcon = { IconButton(onBack) {
+        Icon(Icons.Default.ArrowBack, "Back")
+    } }) }) { pad ->
+        LazyColumn(Modifier.padding(pad).padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            items(notes, key = { it.id }) { note -> Card(Modifier.fillMaxWidth()) {
+                Row(Modifier.padding(12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(note.title.ifBlank { "Untitled" }, Modifier.weight(1f))
+                    TextButton({ vm.restore(note.id) }) { Text("Restore") }
+                    IconButton({ vm.deleteForever(note.id) }) { Icon(Icons.Default.DeleteForever, "Delete permanently") }
                 }
-                TextButton(onClick = { onBrightnessChange(1.0f) }) { Text("Reset (ফুল ব্রাইটনেস)") }
-            }}
-            Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) { Column(modifier = Modifier.padding(20.dp)) {
-                Text("🔤 Font Size", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold); Spacer(Modifier.height(8.dp))
-                Text("বর্তমান: ${(fontScale * 100).toInt()}%", style = MaterialTheme.typography.bodyMedium); Spacer(Modifier.height(16.dp))
-                Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.background)) { Text("আমার ডায়রি — লেখার প্রিভিউ", modifier = Modifier.padding(16.dp), fontFamily = FontFamily.Serif) }
-                Spacer(Modifier.height(8.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = { onFontScaleChange(maxOf(0.8f, fontScale - 0.1f)) }) { Icon(Icons.Default.Remove, "ছোট করুন", tint = MaterialTheme.colorScheme.primary) }
-                    Slider(value = fontScale, onValueChange = { onFontScaleChange(it) }, valueRange = 0.8f..1.6f, modifier = Modifier.weight(1f))
-                    IconButton(onClick = { onFontScaleChange(minOf(1.6f, fontScale + 0.1f)) }) { Icon(Icons.Default.Add, "বড় করুন", tint = MaterialTheme.colorScheme.primary) }
-                }
-                TextButton(onClick = { onFontScaleChange(1.0f) }) { Text("Reset (ডিফল্ট সাইজ)") }
-            }}
-            Text("💡 সেটিংস অটো সেভ হয় — অ্যাপ বন্ধ করলেও থাকবে", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f), textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
-        }
-    }
-}
-
-// ==================== Recycle Bin ====================
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun RecycleBinScreen(viewModel: NoteViewModel, onBack: () -> Unit) {
-    val deleted by viewModel.deletedNotes.collectAsState()
-    Scaffold(topBar = { TopAppBar(title = { Text("🗑️ রিসাইকেল বিন") }, navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, null) } }) }) { padding ->
-        if (deleted.isEmpty()) { Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) { Text("রিসাইকেল বিন খালি ") } } 
-        else { LazyColumn(Modifier.fillMaxSize().padding(padding).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) { items(deleted) { note -> Card(modifier = Modifier.fillMaxWidth()) { Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text(note.title.ifEmpty { "শিরোনামহীন" }, style = MaterialTheme.typography.titleMedium); Text(note.content.take(100), style = MaterialTheme.typography.bodySmall) }; IconButton(onClick = { viewModel.restoreNote(note.id) }) { Icon(Icons.Default.Restore, "রিস্টোর", tint = Color(0xFF4CAF50)) }; IconButton(onClick = { viewModel.permanentDelete(note.id) }) { Icon(Icons.Default.DeleteForever, "চিরতরে মুছুন", tint = Color.Red) } } } } } }
-    }
-}
-
-// ==================== Folder Screen ====================
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun FolderScreen(viewModel: NoteViewModel, onBack: () -> Unit) {
-    val folders by viewModel.folders.collectAsState(); var showDialog by remember { mutableStateOf(false) }; var name by remember { mutableStateOf("") }
-    Scaffold(topBar = { TopAppBar(title = { Text("📁 ফোল্ডারসমূহ") }, navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, null) } }, actions = { IconButton(onClick = { showDialog = true }) { Icon(Icons.Default.CreateNewFolder, "নতুন ফোল্ডার") } }) }) { padding ->
-        if (folders.isEmpty()) { Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) { Column(horizontalAlignment = Alignment.CenterHorizontally) { Text("📂", fontSize = 48.sp); Spacer(Modifier.height(16.dp)); Text("কোনো ফোল্ডার নেই\nউপরের বাটন থেকে তৈরি করুন", textAlign = TextAlign.Center) } } } 
-        else { LazyColumn(Modifier.fillMaxSize().padding(padding).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) { items(folders) { folder -> Card(modifier = Modifier.fillMaxWidth()) { Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.Folder, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(32.dp)); Spacer(Modifier.width(16.dp)); Text(folder.name, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f)); IconButton(onClick = { viewModel.deleteFolder(folder.id) }) { Icon(Icons.Default.Delete, null, tint = Color.Red) } } } } } }
-    }
-    if (showDialog) { AlertDialog(onDismissRequest = { showDialog = false }, title = { Text("নতুন ফোল্ডার তৈরি করুন") }, text = { OutlinedTextField(value = name, onValueChange = { name = it }, placeholder = { Text("ফোল্ডারের নাম") }) }, confirmButton = { TextButton(onClick = { if (name.isNotBlank()) { viewModel.createFolder(name); name = ""; showDialog = false } }) { Text("তৈরি করুন") } }, dismissButton = { TextButton(onClick = { showDialog = false }) { Text("বাতিল") } }) }
-}
-
-// ==================== Hidden Notes ====================
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun HiddenScreen(viewModel: NoteViewModel, onBack: () -> Unit, onNoteClick: (Int) -> Unit) {
-    val hidden by viewModel.hiddenNotes.collectAsState()
-    Scaffold(topBar = { TopAppBar(title = { Text("🙈 লুকানো নোট") }, navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, null) } }) }) { padding ->
-        if (hidden.isEmpty()) { Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) { Text("কোনো লুকানো নোট নেই") } } 
-        else { LazyColumn(Modifier.fillMaxSize().padding(padding).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) { items(hidden) { note -> Card(onClick = { onNoteClick(note.id) }, modifier = Modifier.fillMaxWidth()) { Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text(note.title.ifEmpty { "শিরোনামহীন" }, style = MaterialTheme.typography.titleMedium); Text(note.content.take(80), style = MaterialTheme.typography.bodySmall) }; IconButton(onClick = { viewModel.hideNote(note.id, false) }) { Icon(Icons.Default.Visibility, "আনহাইড") } } } } } }
-    }
-}
-
-// ==================== About Screen ====================
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun AboutScreen(onBack: () -> Unit) {
-    val context = LocalContext.current
-    Scaffold(topBar = { TopAppBar(title = { Text("About") }, navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, null) } }) }) { padding ->
-        Column(modifier = Modifier.fillMaxSize().padding(padding).padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-            Box(modifier = Modifier.size(100.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary), contentAlignment = Alignment.Center) { Text("S", fontSize = 48.sp, color = Color.White, fontWeight = FontWeight.Bold) }
-            Spacer(Modifier.height(24.dp)); Text("sujonmax", fontSize = 28.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Serif, color = MaterialTheme.colorScheme.primary)
-            Spacer(Modifier.height(8.dp)); Text("Developer & Designer", color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f)); Spacer(Modifier.height(32.dp))
-            Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) { Column(modifier = Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) { Text("📔 আমার ডায়রি", fontSize = 20.sp, fontWeight = FontWeight.Bold); Spacer(Modifier.height(8.dp)); Text("Version 1.0", style = MaterialTheme.typography.bodySmall); Spacer(Modifier.height(16.dp)); Text("এই অ্যাপটি ভালোবাসা দিয়ে তৈরি ❤️", textAlign = TextAlign.Center) } }
-            Spacer(Modifier.height(32.dp))
-            Button(onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.facebook.com/sujonmax"))) }, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1877F2))) { Text(" Facebook এ ফলো করুন", modifier = Modifier.padding(8.dp)) }
+            } }
         }
     }
 }
